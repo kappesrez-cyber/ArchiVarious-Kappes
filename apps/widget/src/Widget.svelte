@@ -6,6 +6,7 @@
     isAppsScriptUrl,
     type SurveyAnswers,
     type SurveyQuestion,
+    suggestedFolders,
     suggestWhen,
   } from "@archivarious/core";
   import { type CaptureMode, EventFields, Icon, ModeSwitch, Survey } from "@archivarious/ui";
@@ -16,7 +17,10 @@
   import { onMount } from "svelte";
   import {
     calendarConfig,
+    dueInbox,
     fileCapture,
+    fileInbox,
+    type InboxCapture,
     loadSettings,
     loadVaultContext,
     prepareSurvey,
@@ -24,23 +28,31 @@
     saveSettings,
     sendCapture,
     sendToCalendar,
+    showSurveyToast,
+    snoozeInbox,
+    surveyFor,
     type VaultContext,
   } from "./vault";
 
   const WIDTH = 460;
+  /** How often the widget looks for due surveys to offer in a notification, and the first look after start. */
+  const TOAST_CHECK_MS = 5 * 60_000;
+  const FIRST_TOAST_CHECK_MS = 30_000;
 
   let settings = $state(loadSettings());
   let view = $state<"bar" | "survey" | "settings">(settings.vaultPath ? "bar" : "settings");
   let text = $state("");
   let busy = $state(false);
   let status = $state({ text: "", error: false });
-  let survey = $state<{ capture: Capture; questions: SurveyQuestion[] } | null>(null);
+  /** `inbox` is set when the survey is for a capture already waiting in the inbox (opened from a notification). */
+  let survey = $state<{ capture: Capture; questions: SurveyQuestion[]; inbox?: InboxCapture } | null>(null);
   let autostart = $state(false);
   const settingsDraft = () => ({
     vaultPath: settings.vaultPath,
     placement: settings.placement,
     calendarUrl: settings.calendarUrl,
     calendarKey: settings.calendarKey,
+    surveyToasts: settings.surveyToasts,
   });
   let draft = $state(settingsDraft());
   /** The plugin's calendar URL, shown as a hint when the widget has none of its own. */
@@ -166,26 +178,95 @@
 
   async function answer(answers: SurveyAnswers) {
     if (!survey) return;
+    const { inbox } = survey;
     try {
-      const result = await fileCapture(survey.capture, answers, await vaultContext(), settings);
-      settings.feedback = result.feedback;
-      saveSettings($state.snapshot(settings));
-      contextPromise = null;
-      text = "";
+      const context = await vaultContext();
+      const result = inbox
+        ? await fileInbox(inbox, answers, context, settings)
+        : await fileCapture(survey.capture, answers, context, settings);
+      // A capture from the inbox keeps whatever the user is typing in the bar meanwhile.
+      if (!inbox) text = "";
       survey = null;
       view = "bar";
-      flash(`Разложено → ${result.path}`);
+      contextPromise = null;
+      if (result) {
+        settings.feedback = result.feedback;
+        saveSettings($state.snapshot(settings));
+        flash(`Разложено → ${result.path}`);
+      } else {
+        flash("Эту запись уже разложили в Obsidian");
+      }
       queueMicrotask(resize);
     } catch (error) {
       flash(`Ошибка: ${String(error)}`, true);
     }
   }
 
-  /** "Позже": nothing is lost, the note goes to the inbox and the plugin asks again after the usual delay. */
+  /** "Позже": nothing is lost, the note goes to (or stays in) the inbox and the survey comes back later. */
   async function later() {
+    const inbox = survey?.inbox;
     survey = null;
     view = "bar";
-    await save();
+    if (!inbox) return save();
+    try {
+      await snoozeInbox(inbox, await vaultContext(), settings);
+    } catch (error) {
+      flash(`Ошибка: ${String(error)}`, true);
+    }
+  }
+
+  /**
+   * Survey from a notification (Windows). Each due capture is offered once per survey time; "Позже" gives it a
+   * new time, so it is offered again then. The OS answers `false` when it has no such notifications: then
+   * the widget stops looking and the survey comes in Obsidian as before.
+   */
+  const toasted = new Set<string>();
+  let toasts = new Map<string, InboxCapture>();
+  let toastsSupported = true;
+
+  async function offerDueSurvey() {
+    if (!toastsSupported || !settings.surveyToasts || !settings.vaultPath || view !== "bar") return;
+    try {
+      const due = await dueInbox(settings.vaultPath);
+      const next = due.find(({ capture }) => !toasted.has(`${capture.id}@${capture.surveyAt}`));
+      if (!next) return;
+      const context = await vaultContext();
+      const folders = suggestedFolders(surveyFor(next.capture, context, settings).questions);
+      toasted.add(`${next.capture.id}@${next.capture.surveyAt}`);
+      toasts = new Map(toasts).set(next.capture.id, next);
+      toastsSupported = await showSurveyToast(next, folders);
+    } catch (error) {
+      console.warn("survey notification failed", error);
+    }
+  }
+
+  async function onToastAnswer(answer: { id: string; folder: string | null; later: boolean }) {
+    const item = toasts.get(answer.id);
+    if (!item) return;
+    toasts.delete(answer.id);
+    try {
+      const context = await vaultContext();
+      if (answer.later) {
+        await snoozeInbox(item, context, settings);
+      } else if (answer.folder) {
+        // One click from the notification: the folder is the answer, the other questions keep their defaults.
+        const result = await fileInbox(item, { folder: answer.folder, kind: "fact", importance: 1 }, context, settings);
+        contextPromise = null;
+        if (result) {
+          settings.feedback = result.feedback;
+          saveSettings($state.snapshot(settings));
+          flash(`Разложено → ${result.path}`);
+        } else {
+          flash("Эту запись уже разложили в Obsidian");
+        }
+      } else {
+        // The notification itself was clicked: the full survey in the widget (Rust has brought it forward).
+        survey = { ...surveyFor(item.capture, context, settings), inbox: item };
+        view = "survey";
+      }
+    } catch (error) {
+      flash(`Ошибка: ${String(error)}`, true);
+    }
   }
 
   function onkeydown(event: KeyboardEvent) {
@@ -227,6 +308,7 @@
     settings.placement = draft.placement;
     settings.calendarUrl = calendarUrl;
     settings.calendarKey = draft.calendarKey;
+    settings.surveyToasts = draft.surveyToasts;
     saveSettings($state.snapshot(settings));
     contextPromise = null;
     status = { text: "", error: false };
@@ -294,6 +376,15 @@
     // Losing focus does not put the widget back: on Windows, dragging the bar briefly moves focus from the
     // webview to the window, which used to send the widget under other windows mid-drag.
     void listen("dismiss", () => void place(false)).then((unlisten) => cleanups.push(unlisten));
+    void listen<{ id: string; folder: string | null; later: boolean }>("toast-answer", (event) =>
+      onToastAnswer(event.payload),
+    ).then((unlisten) => cleanups.push(unlisten));
+    const firstCheck = window.setTimeout(() => void offerDueSurvey(), FIRST_TOAST_CHECK_MS);
+    const checks = window.setInterval(() => void offerDueSurvey(), TOAST_CHECK_MS);
+    cleanups.push(() => {
+      window.clearTimeout(firstCheck);
+      window.clearInterval(checks);
+    });
     return () => {
       for (const cleanup of cleanups) cleanup();
     };
@@ -376,6 +467,10 @@
       <label class="inline">
         <input type="checkbox" checked={autostart} onchange={(event) => toggleAutostart(event.currentTarget.checked)} />
         Запускать вместе с Windows
+      </label>
+      <label class="inline">
+        <input type="checkbox" bind:checked={draft.surveyToasts} />
+        Опрос в уведомлениях Windows: папки кнопками, разложить в один клик
       </label>
       <fieldset>
         <legend>Google Календарь</legend>

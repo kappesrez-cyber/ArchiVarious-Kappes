@@ -1,4 +1,4 @@
-import type { SurveyAnswers, SurveyQuestion } from "@archivarious/core";
+import type { GrowthStep, SurveyAnswers, SurveyQuestion } from "@archivarious/core";
 import { Survey } from "@archivarious/ui";
 import { type App, Modal } from "obsidian";
 import { mount, unmount } from "svelte";
@@ -17,6 +17,8 @@ export class SurveyModal extends Modal {
     private readonly onSkip: () => Promise<void>,
     /** Preselected answers by question id (e.g. the note's current folder and kind on a review). */
     private readonly defaults: Record<string, string> = {},
+    /** Review only: the note's growth step, shown as an optional field. */
+    private readonly growth: GrowthStep | null = null,
   ) {
     super(app);
   }
@@ -29,6 +31,7 @@ export class SurveyModal extends Modal {
       props: {
         questions: this.questions,
         defaults: this.defaults,
+        growth: this.growth,
         onanswer: async (answers: SurveyAnswers) => {
           this.submitted = true;
           this.close();

@@ -1,5 +1,6 @@
 mod calendar;
 mod inbox;
+mod notify;
 
 #[cfg(desktop)]
 mod desktop;
@@ -38,6 +39,10 @@ pub fn run() {
             inbox::read_plugin_data,
             inbox::read_sections,
             inbox::write_sections,
+            inbox::list_inbox,
+            inbox::replace_inbox_capture,
+            inbox::remove_inbox_capture,
+            notify::show_survey_toast,
             calendar::send_calendar_event
         ]);
 

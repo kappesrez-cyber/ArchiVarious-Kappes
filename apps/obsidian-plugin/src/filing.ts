@@ -23,6 +23,8 @@ export async function placeNote(
 
   const reviewDays = options.reviewDays === undefined ? settings.reviewDays : options.reviewDays;
   await app.fileManager.processFrontMatter(file, (fm) => {
+    // Every note ArchiVarious files starts as a seed and grows in reviews (see `maturity.ts` in core).
+    if (!fm.stage) fm.stage = "seed";
     Object.assign(fm, options.frontmatter);
     fm.kind = answers.kind;
     fm.importance = answers.importance;

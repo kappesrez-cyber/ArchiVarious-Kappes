@@ -153,6 +153,99 @@ pub fn write_sections(
     Ok(())
 }
 
+/// Inbox captures are small; a larger file in the inbox folder is not one of ours.
+const MAX_CAPTURE_BYTES: u64 = 256 * 1024;
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct InboxFile {
+    /// File name inside the inbox folder.
+    pub name: String,
+    pub text: String,
+}
+
+/// The capture files waiting in the inbox (only files written in the inbox protocol), so the widget can
+/// notice due surveys while Obsidian is closed.
+#[tauri::command]
+pub fn list_inbox(vault_path: String, inbox_folder: String) -> Result<Vec<InboxFile>, String> {
+    let dir = resolve_target(Path::new(&vault_path), &inbox_folder, "x.md")?
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or("bad inbox folder")?;
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.to_string()),
+    };
+    let mut files = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !entry.file_type().is_ok_and(|t| t.is_file()) || !name.ends_with(".md") {
+            continue;
+        }
+        if let Some(text) = read_capture(&entry.path()) {
+            files.push(InboxFile { name, text });
+        }
+    }
+    files.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(files)
+}
+
+/// Replaces a capture in the inbox (a snoozed survey gets a new time). Only an existing capture file
+/// can be replaced, and only by another capture.
+#[tauri::command]
+pub fn replace_inbox_capture(
+    vault_path: String,
+    inbox_folder: String,
+    file_name: String,
+    contents: String,
+) -> Result<(), String> {
+    let target = resolve_target(Path::new(&vault_path), &inbox_folder, &file_name)?;
+    if read_capture(&target).is_none() || !is_capture(&contents) {
+        return Err("not an inbox capture".into());
+    }
+    fs::write(&target, contents).map_err(|e| e.to_string())
+}
+
+/// Removes a capture from the inbox after it was filed. Returns `false` if it was already gone (for example
+/// the plugin sorted it first). Only capture files can be removed.
+#[tauri::command]
+pub fn remove_inbox_capture(
+    vault_path: String,
+    inbox_folder: String,
+    file_name: String,
+) -> Result<bool, String> {
+    let target = resolve_target(Path::new(&vault_path), &inbox_folder, &file_name)?;
+    if !target.exists() {
+        return Ok(false);
+    }
+    if read_capture(&target).is_none() {
+        return Err("not an inbox capture".into());
+    }
+    match fs::remove_file(&target) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// `archivarious: <version>` as the first frontmatter field marks a file written in the inbox protocol.
+fn is_capture(text: &str) -> bool {
+    let text = text.replace("\r\n", "\n");
+    text.starts_with("---\narchivarious:")
+}
+
+fn read_capture(path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    if file.metadata().ok()?.len() > MAX_CAPTURE_BYTES {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(MAX_CAPTURE_BYTES)
+        .read_to_string(&mut text)
+        .ok()?;
+    is_capture(&text).then_some(text)
+}
+
 fn scan_dir(dir: &Path, relative: &str, inbox: &str, notes: &mut Vec<NoteSnippet>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -397,6 +490,48 @@ mod tests {
             Some(r#"{"reviewDays":3}"#)
         );
         assert!(read_plugin_data("relative/path".into()).is_err());
+        fs::remove_dir_all(&vault).unwrap();
+    }
+
+    #[test]
+    fn lists_replaces_and_removes_only_captures() {
+        let vault = temp_vault("captures");
+        let inbox = vault.join("ArchiVarious/Inbox");
+        fs::create_dir_all(&inbox).unwrap();
+        fs::write(
+            inbox.join("a.md"),
+            "---\narchivarious: 1\nid: a\n---\n\nhi\n",
+        )
+        .unwrap();
+        fs::write(inbox.join("note.md"), "# not a capture").unwrap();
+        let v = || s(&vault);
+        let i = || "ArchiVarious/Inbox".to_string();
+
+        let listed = list_inbox(v(), i()).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "a.md");
+
+        assert!(
+            replace_inbox_capture(v(), i(), "note.md".into(), "---\narchivarious: 1\n".into())
+                .is_err()
+        );
+        assert!(replace_inbox_capture(v(), i(), "a.md".into(), "plain text".into()).is_err());
+        replace_inbox_capture(
+            v(),
+            i(),
+            "a.md".into(),
+            "---\narchivarious: 1\nid: b\n---\n".into(),
+        )
+        .unwrap();
+        assert!(fs::read_to_string(inbox.join("a.md"))
+            .unwrap()
+            .contains("id: b"));
+
+        assert!(remove_inbox_capture(v(), i(), "note.md".into()).is_err());
+        assert!(remove_inbox_capture(v(), i(), "a.md".into()).unwrap());
+        assert!(!remove_inbox_capture(v(), i(), "a.md".into()).unwrap());
+        assert!(inbox.join("note.md").exists());
+        assert!(list_inbox(v(), "Missing".into()).unwrap().is_empty());
         fs::remove_dir_all(&vault).unwrap();
     }
 }

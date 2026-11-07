@@ -17,6 +17,8 @@ export interface SurveyAnswers {
   importance: 1 | 2 | 3;
   /** Sections the user created in this survey; the host adds them to the shared section list. */
   createdSections?: string[];
+  /** Review only: what the user wrote in the growth step (see `maturity.ts`); absent when skipped. */
+  growth?: string;
 }
 
 /**
@@ -63,4 +65,10 @@ export function buildSurvey(
       ],
     },
   ];
+}
+
+/** The survey's first folder options (the algorithm's best guesses come first), e.g. for notification buttons. */
+export function suggestedFolders(questions: SurveyQuestion[], limit = 3): string[] {
+  const folder = questions.find((q) => q.id === "folder");
+  return (folder?.options ?? []).slice(0, limit).map((o) => o.value);
 }

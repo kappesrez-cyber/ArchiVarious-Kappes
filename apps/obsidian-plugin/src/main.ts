@@ -1,15 +1,20 @@
 import {
+  addGrowthLine,
   buildCalendarEvent,
   buildSurvey,
   type CaptureSource,
   calendarRequestBody,
   type EventWhen,
+  type GrowthStep,
+  growthStep,
   isAppsScriptUrl,
   learnFromAnswer,
   lightFormat,
-  nextReviewDays,
+  nextStage,
   type PlacementCandidate,
   parseCalendarResponse,
+  reviewDaysAfterGrowth,
+  STAGE_LABELS,
   type SurveyAnswers,
   snoozeSurvey,
   suggestPlacements,
@@ -39,6 +44,8 @@ interface SurveySubject {
   /** Folder the note is in now; offered first so "it's fine where it is" is one tap. */
   currentFolder?: string;
   defaults?: Record<string, string>;
+  /** Review only: the step that grows the note to its next maturity stage. */
+  growth?: GrowthStep | null;
   place(answers: SurveyAnswers, related: string[]): Promise<TFile>;
   skip(): Promise<void>;
 }
@@ -232,18 +239,35 @@ export default class ArchiVariousPlugin extends Plugin {
 
   private async reviewSubject(review: ReviewEntry): Promise<SurveySubject> {
     const subject = await this.noteSubject(review.file);
+    const step = growthStep(review.stage);
     return {
       ...subject,
-      title: `Пересмотр: ${review.file.basename}`,
+      title: `Пересмотр (${STAGE_LABELS[review.stage]}): ${review.file.basename}`,
+      growth: step,
       defaults: {
         ...(review.kind ? { kind: review.kind } : {}),
         ...(review.importance ? { importance: String(review.importance) } : {}),
       },
-      place: (answers, related) =>
-        placeNote(this.app, this.settings, review.file, answers, {
+      place: async (answers, related) => {
+        const grew = Boolean(step && answers.growth);
+        const stage = nextStage(review.stage, grew);
+        const file = await placeNote(this.app, this.settings, review.file, answers, {
           related,
-          reviewDays: nextReviewDays(review.reviewDays || this.settings.reviewDays, answers.importance),
-        }),
+          reviewDays: reviewDaysAfterGrowth(
+            review.reviewDays || this.settings.reviewDays,
+            answers.importance,
+            review.stage,
+            stage,
+          ),
+          frontmatter: { stage },
+        });
+        if (step && answers.growth) {
+          const growth = answers.growth;
+          await this.app.vault.process(file, (text) => addGrowthLine(text, step, growth));
+          new Notice(`ArchiVarious: заметка выросла: ${STAGE_LABELS[stage]}`);
+        }
+        return file;
+      },
       skip: () =>
         this.app.fileManager.processFrontMatter(review.file, (fm) => {
           fm.review_at = snoozeSurvey(new Date(), {
@@ -279,7 +303,18 @@ export default class ArchiVariousPlugin extends Plugin {
         const related = suggestRelatedNotes(input, buildNoteProfiles(this.app, this.settings.inboxFolder)).map(
           (n) => n.path,
         );
-        const placed = await subject.place(answers, related);
+        let placed: TFile;
+        try {
+          placed = await subject.place(answers, related);
+        } catch (error) {
+          // For example the widget filed this capture from a Windows notification while the survey was open here.
+          new Notice(
+            `ArchiVarious: не удалось разложить (возможно, запись уже разложена в виджете): ${String(error)}`,
+            8000,
+          );
+          this.skipped.add(subject.key);
+          return void this.runQueue();
+        }
         this.settings.feedback = learnFromAnswer(this.settings.feedback, answers.folder, input);
         await this.saveSettings();
         new Notice(`ArchiVarious: → ${placed.path}`);
@@ -293,6 +328,7 @@ export default class ArchiVariousPlugin extends Plugin {
         if (this.mode !== "due") void this.runQueue();
       },
       { ...subject.defaults, ...(current ? { folder: current } : {}) },
+      subject.growth ?? null,
     ).open();
   }
 }

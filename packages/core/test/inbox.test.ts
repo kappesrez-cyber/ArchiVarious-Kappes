@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildCaptureUri, captureFileName, newCapture, parseCapture, serializeCapture } from "../src/inbox";
+import {
+  buildCaptureUri,
+  captureFileName,
+  dueCaptures,
+  newCapture,
+  parseCapture,
+  serializeCapture,
+} from "../src/inbox";
 
 describe("inbox protocol", () => {
   const now = new Date("2026-03-04T05:06:07.000Z");
@@ -28,5 +35,19 @@ describe("inbox protocol", () => {
   it("builds obsidian:// capture URIs", () => {
     const uri = buildCaptureUri("hello world", "widget-mobile", "Brain");
     expect(uri).toBe("obsidian://archivarious?text=hello%20world&source=widget-mobile&vault=Brain");
+  });
+});
+
+describe("dueCaptures", () => {
+  it("keeps due, unfiled captures, longest-waiting first", () => {
+    const now = new Date("2026-05-01T12:00:00.000Z");
+    const make = (surveyAt: string, status: "inbox" | "filed" = "inbox") => ({
+      capture: { ...newCapture("x", "plugin", now), surveyAt, status },
+    });
+    const late = make("2026-05-01T11:00:00.000Z");
+    const early = make("2026-05-01T09:00:00.000Z");
+    const filed = make("2026-05-01T08:00:00.000Z", "filed");
+    const future = make("2026-05-01T13:00:00.000Z");
+    expect(dueCaptures([late, filed, future, early], now)).toEqual([early, late]);
   });
 });

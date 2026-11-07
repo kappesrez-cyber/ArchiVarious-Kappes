@@ -1,7 +1,7 @@
 import type { Capture, CaptureSource, CaptureStatus } from "./capture";
 import { createId } from "./capture";
 import { lightFormat } from "./format";
-import { DEFAULT_SURVEY_POLICY, type SurveyPolicy, scheduleSurvey } from "./schedule";
+import { DEFAULT_SURVEY_POLICY, isSurveyDue, type SurveyPolicy, scheduleSurvey } from "./schedule";
 
 /**
  * Inbox protocol: the contract between every capture surface (widget app, plugin, URI) and the plugin.
@@ -82,6 +82,13 @@ export function parseCapture(markdown: string): Capture | null {
     createdAt: fields.get("created") ?? "",
     surveyAt: fields.get("survey_at") ?? "",
   };
+}
+
+/** Captures whose survey is due and that are not filed yet, the longest-waiting first. */
+export function dueCaptures<T extends { capture: Capture }>(items: T[], now: Date = new Date()): T[] {
+  return items
+    .filter(({ capture }) => capture.status !== "filed" && !!capture.surveyAt && isSurveyDue(capture.surveyAt, now))
+    .sort((a, b) => a.capture.surveyAt.localeCompare(b.capture.surveyAt));
 }
 
 /** `obsidian://archivarious?text=…` — instant capture from any app that can open a URL (mobile widgets, shortcuts). */

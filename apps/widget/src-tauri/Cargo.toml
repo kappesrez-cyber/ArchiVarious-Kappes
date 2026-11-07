@@ -29,6 +29,10 @@ tauri-plugin-global-shortcut = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"
 
+[target.'cfg(windows)'.dependencies]
+# Windows toasts with buttons (the survey answered from a notification). Same crate tauri-plugin-notification uses.
+tauri-winrt-notification = "0.7"
+
 [profile.release]
 codegen-units = 1
 lto = true

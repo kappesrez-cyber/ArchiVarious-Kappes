@@ -27,7 +27,7 @@ describe("filed notes", () => {
       now,
     });
     expect(text).toContain(`archivarious_id: ${capture.id}`);
-    expect(text).toContain("kind: idea\nimportance: 3");
+    expect(text).toContain("kind: idea\nimportance: 3\nstage: seed");
     expect(text).toContain('tags: ["idea"]');
     expect(text).toContain('review_at: "2026-03-11T05:06:07.000Z"\nreview_days: 7');
     expect(text).toContain("Связано: [[Learning/Learning|Learning]] · [[Learning/Memory palace|Memory palace]]");

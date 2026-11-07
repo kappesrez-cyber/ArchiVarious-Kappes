@@ -7,6 +7,7 @@ import {
   type CaptureSource,
   calendarRequestBody,
   captureFileName,
+  dueCaptures,
   type EventWhen,
   hubNote,
   isAppsScriptUrl,
@@ -19,6 +20,7 @@ import {
   noteFileName,
   type PlacementFeedback,
   parseCalendarResponse,
+  parseCapture,
   parseSections,
   parseSharedSettings,
   type SharedSettings,
@@ -27,6 +29,7 @@ import {
   serializeFiledNote,
   serializeSections,
   snapshotFromSnippets,
+  snoozeSurvey,
   suggestPlacements,
   suggestRelatedNotes,
   type VaultSnapshot,
@@ -48,6 +51,8 @@ export interface WidgetSettings {
   /** Google Calendar Apps Script URL and key. Empty = use the plugin's (if it is set up there). */
   calendarUrl: string;
   calendarKey: string;
+  /** Windows: when a capture's survey is due, offer its best folders as buttons in a notification. */
+  surveyToasts: boolean;
 }
 
 const SETTINGS_KEY = "archivarious.settings";
@@ -60,6 +65,7 @@ export function loadSettings(): WidgetSettings {
     feedback: {},
     calendarUrl: "",
     calendarKey: "",
+    surveyToasts: true,
   };
   try {
     return { ...defaults, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") };
@@ -137,6 +143,11 @@ export function prepareSurvey(raw: string, context: VaultContext, settings: Widg
     delayMinutes: context.shared.surveyDelayMinutes,
     snoozeMinutes: context.shared.snoozeMinutes,
   });
+  return surveyFor(capture, context, settings);
+}
+
+/** The survey for a capture: the algorithm's folder suggestions first, then the user's sections. */
+export function surveyFor(capture: Capture, context: VaultContext, settings: WidgetSettings) {
   const input = { title: capture.title, body: capture.body, tags: capture.tags };
   const feedback = mergeFeedback(context.shared.feedback, settings.feedback);
   const candidates = suggestPlacements(input, context.snapshot.index, feedback);
@@ -215,4 +226,70 @@ export async function sendToCalendar(raw: string, when: EventWhen, settings: Wid
   const result = parseCalendarResponse(reply);
   if (!result.ok) throw new Error(result.error);
   return title;
+}
+
+/** A capture waiting in the vault's inbox folder (written by the widget, the plugin or a URI). */
+export interface InboxCapture {
+  fileName: string;
+  capture: Capture;
+}
+
+/** Inbox captures whose survey is due, the longest-waiting first. */
+export async function dueInbox(vaultPath: string): Promise<InboxCapture[]> {
+  const shared = await readSharedSettings(vaultPath);
+  const files = await invoke<{ name: string; text: string }[]>("list_inbox", {
+    vaultPath,
+    inboxFolder: shared.inboxFolder,
+  });
+  const items = files.flatMap(({ name, text }) => {
+    const capture = parseCapture(text);
+    return capture ? [{ fileName: name, capture }] : [];
+  });
+  return dueCaptures(items);
+}
+
+/** "Позже" for an inbox capture: same snooze as in the plugin, written back into the capture file. */
+export async function snoozeInbox(item: InboxCapture, context: VaultContext, settings: WidgetSettings): Promise<void> {
+  const surveyAt = snoozeSurvey(new Date(), {
+    delayMinutes: context.shared.surveyDelayMinutes,
+    snoozeMinutes: context.shared.snoozeMinutes,
+  }).toISOString();
+  await invoke("replace_inbox_capture", {
+    vaultPath: settings.vaultPath,
+    inboxFolder: context.shared.inboxFolder,
+    fileName: item.fileName,
+    contents: serializeCapture({ ...item.capture, surveyAt }),
+  });
+}
+
+/**
+ * Files an inbox capture and removes it from the inbox. Returns `null` if it is no longer there
+ * (the plugin sorted it in the meantime), so it is never filed twice.
+ */
+export async function fileInbox(
+  item: InboxCapture,
+  answers: SurveyAnswers,
+  context: VaultContext,
+  settings: WidgetSettings,
+): Promise<{ path: string; feedback: PlacementFeedback } | null> {
+  const waiting = await inboxNames(settings.vaultPath, context.shared.inboxFolder);
+  if (!waiting.has(item.fileName)) return null;
+  const result = await fileCapture(item.capture, answers, context, settings);
+  await invoke<boolean>("remove_inbox_capture", {
+    vaultPath: settings.vaultPath,
+    inboxFolder: context.shared.inboxFolder,
+    fileName: item.fileName,
+  });
+  return result;
+}
+
+async function inboxNames(vaultPath: string, inboxFolder: string): Promise<Set<string>> {
+  const files = await invoke<{ name: string }[]>("list_inbox", { vaultPath, inboxFolder });
+  return new Set(files.map((f) => f.name));
+}
+
+/** Shows the Windows notification with folder buttons. `false` where the OS has no such notifications. */
+export function showSurveyToast(item: InboxCapture, folders: string[]): Promise<boolean> {
+  const body = item.capture.body.length > 200 ? `${item.capture.body.slice(0, 200)}…` : item.capture.body;
+  return invoke<boolean>("show_survey_toast", { id: item.capture.id, title: item.capture.title, body, folders });
 }

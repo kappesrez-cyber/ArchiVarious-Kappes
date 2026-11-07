@@ -1,4 +1,4 @@
-import { isSurveyDue } from "@archivarious/core";
+import { isSurveyDue, type NoteStage, parseStage } from "@archivarious/core";
 import { type App, getAllTags, type TFile } from "obsidian";
 
 /** A filed note whose frontmatter asks for a review survey ("does it still belong here?"). */
@@ -8,6 +8,8 @@ export interface ReviewEntry {
   reviewDays: number;
   kind?: string;
   importance?: number;
+  /** Maturity stage; notes filed before maturity existed are seeds. */
+  stage: NoteStage;
 }
 
 /** Notes with `review_at`, read from the metadata cache (no file reads). Earliest first. */
@@ -22,6 +24,7 @@ export function listReviews(app: App): ReviewEntry[] {
       reviewDays: Number(fm.review_days) || 0,
       kind: typeof fm.kind === "string" ? fm.kind : undefined,
       importance: Number(fm.importance) || undefined,
+      stage: parseStage(fm.stage),
     });
   }
   return entries.sort((a, b) => a.reviewAt.localeCompare(b.reviewAt));

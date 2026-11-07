@@ -37,7 +37,7 @@ export function noteFileName(title: string): string {
 
 /**
  * The final note for a sorted capture: same frontmatter fields the plugin writes with `processFrontMatter`
- * (`archivarious_id`, `created`, `kind`, `importance`, `review_at`, `review_days`, `tags`, `links`), so the
+ * (`archivarious_id`, `created`, `kind`, `importance`, `stage`, `review_at`, `review_days`, `tags`, `links`), so the
  * plugin's review queue picks up notes filed by the widget app.
  */
 export function serializeFiledNote(
@@ -50,6 +50,7 @@ export function serializeFiledNote(
     `created: ${JSON.stringify(capture.createdAt)}`,
     `kind: ${answers.kind}`,
     `importance: ${answers.importance}`,
+    "stage: seed",
   ];
   if (capture.tags.length > 0) fm.push(`tags: [${capture.tags.map((t) => JSON.stringify(t)).join(", ")}]`);
   if (capture.links.length > 0) fm.push(`links: [${capture.links.map((l) => JSON.stringify(l)).join(", ")}]`);

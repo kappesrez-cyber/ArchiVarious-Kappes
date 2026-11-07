@@ -4,6 +4,7 @@ export * from "./filed";
 export * from "./format";
 export * from "./inbox";
 export * from "./knowledge";
+export * from "./maturity";
 export * from "./placement";
 export * from "./schedule";
 export * from "./sections";

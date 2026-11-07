@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { type SurveyAnswers, type SurveyQuestion, sectionPath } from "@archivarious/core";
+  import { type GrowthStep, type SurveyAnswers, type SurveyQuestion, sectionPath } from "@archivarious/core";
   import { tick } from "svelte";
   import Icon from "./Icon.svelte";
 
@@ -7,13 +7,15 @@
     questions: SurveyQuestion[];
     /** Preselected answers by question id. */
     defaults?: Record<string, string>;
+    /** Review only: the note's growth step (see `maturity.ts`), shown as an optional one-line field. */
+    growth?: GrowthStep | null;
     submitLabel?: string;
     skipLabel?: string;
     onanswer: (answers: SurveyAnswers) => void | Promise<void>;
     onskip: () => void | Promise<void>;
   }
 
-  let { questions, defaults = {}, submitLabel = "Разложить", skipLabel = "Позже", onanswer, onskip }: Props = $props();
+  let { questions, defaults = {}, growth = null, submitLabel = "Разложить", skipLabel = "Позже", onanswer, onskip }: Props = $props();
 
   const split = (path: string) => {
     const [top = "", ...rest] = sectionPath(path).split("/");
@@ -46,6 +48,7 @@
   let paths = $state<string[]>(init.paths);
   let created = $state<string[]>([]);
   let section = $state(init.section);
+  let growthText = $state("");
   let sub = $state(init.sub);
 
   const sections = $derived([...new Set(paths.map((p) => split(p).top))]);
@@ -100,6 +103,7 @@
         kind: (answers.kind ?? "fact") as SurveyAnswers["kind"],
         importance: Number(answers.importance ?? 1) as SurveyAnswers["importance"],
         ...(created.length > 0 ? { createdSections: [...created] } : {}),
+        ...(growth && growthText.trim() ? { growth: growthText.trim() } : {}),
       });
     } finally {
       busy = false;
@@ -187,6 +191,12 @@
       </div>
     </div>
   {/each}
+  {#if growth}
+    <label class="archivarious-survey__question archivarious-survey__growth">
+      <span class="archivarious-survey__prompt">{growth.prompt}</span>
+      <input class="archivarious-survey__custom" type="text" placeholder={growth.placeholder} bind:value={growthText} />
+    </label>
+  {/if}
   <div class="archivarious-survey__actions">
     <button type="button" onclick={() => onskip()} disabled={busy}>{skipLabel}</button>
     <button type="button" class="is-primary" onclick={submit} disabled={busy || !folder}>{submitLabel}</button>
@@ -255,6 +265,13 @@
     margin-top: 0.45rem;
     width: 100%;
     box-sizing: border-box;
+  }
+  .archivarious-survey__growth {
+    display: flex;
+    flex-direction: column;
+  }
+  .archivarious-survey__growth .archivarious-survey__custom {
+    margin-top: 0;
   }
   .archivarious-survey__actions {
     display: flex;
